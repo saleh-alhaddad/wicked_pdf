@@ -55,53 +55,38 @@ class WickedPdf
   end
 
   def pdf_from_string(string, options = {})
-    options = options.dup
     options.merge!(WickedPdf.config) { |_key, option, _config| option }
     string_file = WickedPdf::Tempfile.new('wicked_pdf.html', options[:temp_path])
-    string_file.write_in_chunks(string)
-    pdf_from_html_file(string_file.path, options)
-  ensure
-    if options[:delete_temporary_files] && string_file
-      string_file.close!
-    elsif string_file
-      string_file.close
+    begin
+      string_file.write_in_chunks(string)
+      pdf = pdf_from_html_file(string_file.path, options)
+    ensure
+      if options[:delete_temporary_files] && string_file
+        string_file.close!
+      else
+        string_file.close
+      end
     end
+
+    pdf
   end
 
   def pdf_from_url(url, options = {}) # rubocop:disable Metrics/CyclomaticComplexity
     # merge in global config options
     options.merge!(WickedPdf.config) { |_key, option, _config| option }
-    generated_pdf_file = WickedPdf::Tempfile.new('wicked_pdf_generated_file.pdf', options[:temp_path])
-    command = [@binary.path]
-    command.unshift(@binary.xvfb_run_path) if options[:use_xvfb]
-    command += option_parser.parse(options)
-    command << url
-    command << generated_pdf_file.path.to_s
+    generated_pdf_file = create_tempfile('wicked_pdf_generated_file.pdf', options[:temp_path])
+    command = build_command(url, options, generated_pdf_file)
 
     print_command(command.inspect) if in_development_mode?
 
-    if track_progress?(options)
-      invoke_with_progress(command, options)
-    else
-      _out, err, status = Open3.capture3(*command)
-      err = [status.to_s, err].join("\n") if !err.empty? || !status.success?
-    end
-    if options[:return_file]
-      return_file = options.delete(:return_file)
-      return generated_pdf_file
-    end
+    execute_command(command, options)
 
-    pdf = generated_pdf_file.read_in_chunks
-
-    raise "Error generating PDF\n Command Error: #{err}" if options[:raise_on_all_errors] && !err.empty?
-    raise "PDF could not be generated!\n Command Error: #{err}" if pdf && pdf.rstrip.empty?
-
-    pdf
+    handle_generated_pdf(generated_pdf_file, options)
   rescue StandardError => e
     raise "Failed to execute:\n#{command}\nError: #{e}"
   ensure
     clean_temp_files
-    generated_pdf_file.close! if generated_pdf_file && !return_file
+    generated_pdf_file.close! if generated_pdf_file && !@return_file
   end
 
   private
@@ -128,5 +113,41 @@ class WickedPdf
     return unless option_parser.hf_tempfiles.present?
 
     option_parser.hf_tempfiles.each { |file| File.delete(file) }
+  end
+
+  def create_tempfile(name, temp_path)
+    WickedPdf::Tempfile.new(name, temp_path)
+  end
+
+  def build_command(url, options, generated_pdf_file)
+    command = [@binary.path]
+    command.unshift(@binary.xvfb_run_path) if options[:use_xvfb]
+    command += option_parser.parse(options)
+    command << url
+    command << generated_pdf_file.path.to_s
+    command
+  end
+
+  def execute_command(command, options)
+    if track_progress?(options)
+      invoke_with_progress(command, options)
+    else
+      _out, @err, status = Open3.capture3(*command)
+      [status.to_s, @err].join("\n") if !@err.empty? || !status.success?
+    end
+  end
+
+  def handle_generated_pdf(generated_pdf_file, options)
+    if options[:return_file]
+      @return_file = options.delete(:return_file)
+      return generated_pdf_file
+    end
+
+    pdf = generated_pdf_file.read_in_chunks
+
+    raise "Error generating PDF\n Command Error: #{@err}" if options[:raise_on_all_errors] && !@err.empty?
+    raise "PDF could not be generated!\n Command Error: #{@err}" if pdf && pdf.rstrip.empty?
+
+    pdf
   end
 end

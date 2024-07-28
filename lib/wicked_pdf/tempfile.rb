@@ -12,8 +12,9 @@ class WickedPdf
 
     def write_in_chunks(input_string)
       binmode
-      string_io = StringIO.new(input_string)
-      write(string_io.read(chunk_size)) until string_io.eof?
+      input_string.each_char.each_slice(chunk_size) do |chunk|
+        write(chunk.join)
+      end
       close
       self
     rescue Errno::EINVAL => e
